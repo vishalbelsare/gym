@@ -72,28 +72,21 @@ class NormalizeObservation(gym.core.Wrapper):
 
     def step(self, action):
         """Steps through the environment and normalizes the observation."""
-        obs, rews, dones, infos = self.env.step(action)
+        obs, rews, terminateds, truncateds, infos = self.env.step(action)
         if self.is_vector_env:
             obs = self.normalize(obs)
         else:
             obs = self.normalize(np.array([obs]))[0]
-        return obs, rews, dones, infos
+        return obs, rews, terminateds, truncateds, infos
 
     def reset(self, **kwargs):
         """Resets the environment and normalizes the observation."""
-        return_info = kwargs.get("return_info", False)
-        if return_info:
-            obs, info = self.env.reset(**kwargs)
-        else:
-            obs = self.env.reset(**kwargs)
+        obs, info = self.env.reset(**kwargs)
+
         if self.is_vector_env:
-            obs = self.normalize(obs)
+            return self.normalize(obs), info
         else:
-            obs = self.normalize(np.array([obs]))[0]
-        if not return_info:
-            return obs
-        else:
-            return obs, info
+            return self.normalize(np.array([obs]))[0], info
 
     def normalize(self, obs):
         """Normalises the observation using the running mean and variance of the observations."""
@@ -134,15 +127,16 @@ class NormalizeReward(gym.core.Wrapper):
 
     def step(self, action):
         """Steps through the environment, normalizing the rewards returned."""
-        obs, rews, dones, infos = self.env.step(action)
+        obs, rews, terminateds, truncateds, infos = self.env.step(action)
         if not self.is_vector_env:
             rews = np.array([rews])
         self.returns = self.returns * self.gamma + rews
         rews = self.normalize(rews)
+        dones = np.logical_or(terminateds, truncateds)
         self.returns[dones] = 0.0
         if not self.is_vector_env:
             rews = rews[0]
-        return obs, rews, dones, infos
+        return obs, rews, terminateds, truncateds, infos
 
     def normalize(self, rews):
         """Normalizes the rewards with the running mean rewards and their variance."""

@@ -9,8 +9,9 @@ import numpy as np
 from gym.error import CustomSpaceError
 from gym.spaces import Box, Dict, Discrete, MultiBinary, MultiDiscrete, Space, Tuple
 
-_BaseGymSpaces = (Box, Discrete, MultiDiscrete, MultiBinary)
-__all__ = ["_BaseGymSpaces", "batch_space", "iterate"]
+BaseGymSpaces = (Box, Discrete, MultiDiscrete, MultiBinary)
+_BaseGymSpaces = BaseGymSpaces
+__all__ = ["BaseGymSpaces", "_BaseGymSpaces", "batch_space", "iterate"]
 
 
 @singledispatch
@@ -33,6 +34,9 @@ def batch_space(space: Space, n: int = 1) -> Space:
 
     Returns:
         Space (e.g. the observation space) for a batch of environments in the vectorized environment.
+
+    Raises:
+        ValueError: Cannot batch space that is not a valid :class:`gym.Space` instance
     """
     raise ValueError(
         f"Cannot batch space with type `{type(space)}`. The space must be a valid `gym.Space` instance."
@@ -147,9 +151,12 @@ def iterate(space: Space, items) -> Iterator:
 
     Returns:
         Iterator over the elements in `items`.
+
+    Raises:
+        ValueError: Space is not an instance of :class:`gym.Space`
     """
     raise ValueError(
-        f"Space of type `{type(space)}` is not a valid `gym.Space` " "instance."
+        f"Space of type `{type(space)}` is not a valid `gym.Space` instance."
     )
 
 
@@ -173,7 +180,7 @@ def _iterate_tuple(space, items):
     # If this is a tuple of custom subspaces only, then simply iterate over items
     if all(
         isinstance(subspace, Space)
-        and (not isinstance(subspace, _BaseGymSpaces + (Tuple, Dict)))
+        and (not isinstance(subspace, BaseGymSpaces + (Tuple, Dict)))
         for subspace in space.spaces
     ):
         return iter(items)

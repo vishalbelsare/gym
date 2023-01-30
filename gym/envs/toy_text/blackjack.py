@@ -110,9 +110,12 @@ class BlackjackEnv(gym.Env):
     * v0: Initial versions release (1.0.0)
     """
 
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
+    metadata = {
+        "render_modes": ["human", "rgb_array"],
+        "render_fps": 4,
+    }
 
-    def __init__(self, natural=False, sab=False):
+    def __init__(self, render_mode: Optional[str] = None, natural=False, sab=False):
         self.action_space = spaces.Discrete(2)
         self.observation_space = spaces.Tuple(
             (spaces.Discrete(32), spaces.Discrete(11), spaces.Discrete(2))
@@ -125,18 +128,20 @@ class BlackjackEnv(gym.Env):
         # Flag for full agreement with the (Sutton and Barto, 2018) definition. Overrides self.natural
         self.sab = sab
 
+        self.render_mode = render_mode
+
     def step(self, action):
         assert self.action_space.contains(action)
         if action:  # hit: add a card to players hand and return
             self.player.append(draw_card(self.np_random))
             if is_bust(self.player):
-                done = True
+                terminated = True
                 reward = -1.0
             else:
-                done = False
+                terminated = False
                 reward = 0.0
         else:  # stick: play out the dealers hand, and score
-            done = True
+            terminated = True
             while sum_hand(self.dealer) < 17:
                 self.dealer.append(draw_card(self.np_random))
             reward = cmp(score(self.player), score(self.dealer))
@@ -151,7 +156,10 @@ class BlackjackEnv(gym.Env):
             ):
                 # Natural gives extra points, but doesn't autowin. Legacy implementation
                 reward = 1.5
-        return self._get_obs(), reward, done, {}
+
+        if self.render_mode == "human":
+            self.render()
+        return self._get_obs(), reward, terminated, False, {}
 
     def _get_obs(self):
         return (sum_hand(self.player), self.dealer[0], usable_ace(self.player))
@@ -159,18 +167,37 @@ class BlackjackEnv(gym.Env):
     def reset(
         self,
         seed: Optional[int] = None,
-        return_info: bool = False,
         options: Optional[dict] = None,
     ):
         super().reset(seed=seed)
         self.dealer = draw_hand(self.np_random)
         self.player = draw_hand(self.np_random)
-        if not return_info:
-            return self._get_obs()
-        else:
-            return self._get_obs(), {}
 
-    def render(self, mode="human"):
+        _, dealer_card_value, _ = self._get_obs()
+
+        suits = ["C", "D", "H", "S"]
+        self.dealer_top_card_suit = self.np_random.choice(suits)
+
+        if dealer_card_value == 1:
+            self.dealer_top_card_value_str = "A"
+        elif dealer_card_value == 10:
+            self.dealer_top_card_value_str = self.np_random.choice(["J", "Q", "K"])
+        else:
+            self.dealer_top_card_value_str = str(dealer_card_value)
+
+        if self.render_mode == "human":
+            self.render()
+        return self._get_obs(), {}
+
+    def render(self):
+        if self.render_mode is None:
+            gym.logger.warn(
+                "You are calling render method without specifying any render mode. "
+                "You can specify the render_mode at initialization, "
+                f'e.g. gym("{self.spec.id}", render_mode="rgb_array")'
+            )
+            return
+
         try:
             import pygame
         except ImportError:
@@ -189,7 +216,7 @@ class BlackjackEnv(gym.Env):
 
         if not hasattr(self, "screen"):
             pygame.init()
-            if mode == "human":
+            if self.render_mode == "human":
                 pygame.display.init()
                 self.screen = pygame.display.set_mode((screen_width, screen_height))
             else:
@@ -219,22 +246,15 @@ class BlackjackEnv(gym.Env):
         )
         dealer_text_rect = self.screen.blit(dealer_text, (spacing, spacing))
 
-        suits = ["C", "D", "H", "S"]
-        dealer_card_suit = self.np_random.choice(suits)
-
-        if dealer_card_value == 1:
-            dealer_card_value_str = "A"
-        elif dealer_card_value == 10:
-            dealer_card_value_str = self.np_random.choice(["J", "Q", "K"])
-        else:
-            dealer_card_value_str = str(dealer_card_value)
-
         def scale_card_img(card_img):
             return pygame.transform.scale(card_img, (card_img_width, card_img_height))
 
         dealer_card_img = scale_card_img(
             get_image(
-                os.path.join("img", dealer_card_suit + dealer_card_value_str + ".png")
+                os.path.join(
+                    "img",
+                    f"{self.dealer_top_card_suit}{self.dealer_top_card_value_str}.png",
+                )
             )
         )
         dealer_card_rect = self.screen.blit(
@@ -278,7 +298,7 @@ class BlackjackEnv(gym.Env):
                     player_sum_text_rect.bottom + spacing // 2,
                 ),
             )
-        if mode == "human":
+        if self.render_mode == "human":
             pygame.event.pump()
             pygame.display.update()
             self.clock.tick(self.metadata["render_fps"])

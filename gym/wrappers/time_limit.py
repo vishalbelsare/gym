@@ -5,13 +5,10 @@ import gym
 
 
 class TimeLimit(gym.Wrapper):
-    """This wrapper will issue a `done` signal if a maximum number of timesteps is exceeded.
+    """This wrapper will issue a `truncated` signal if a maximum number of timesteps is exceeded.
 
-    Oftentimes, it is **very** important to distinguish `done` signals that were produced by the
-    :class:`TimeLimit` wrapper (truncations) and those that originate from the underlying environment (terminations).
-    This can be done by looking at the ``info`` that is returned when `done`-signal was issued.
-    The done-signal originates from the time limit (i.e. it signifies a *truncation*) if and only if
-    the key `"TimeLimit.truncated"` exists in ``info`` and the corresponding value is ``True``.
+    If a truncation is not defined inside the environment itself, this is the only place that the truncation signal is issued.
+    Critically, this is different from the `terminated` signal that originates from the underlying environment as part of the MDP.
 
     Example:
        >>> from gym.envs.classic_control import CartPoleEnv
@@ -20,7 +17,11 @@ class TimeLimit(gym.Wrapper):
        >>> env = TimeLimit(env, max_episode_steps=1000)
     """
 
-    def __init__(self, env: gym.Env, max_episode_steps: Optional[int] = None):
+    def __init__(
+        self,
+        env: gym.Env,
+        max_episode_steps: Optional[int] = None,
+    ):
         """Initializes the :class:`TimeLimit` wrapper with an environment and the number of steps after which truncation will occur.
 
         Args:
@@ -42,16 +43,17 @@ class TimeLimit(gym.Wrapper):
             action: The environment step action
 
         Returns:
-            The environment step ``(observation, reward, done, info)`` with "TimeLimit.truncated"=True
-            when truncated (the number of steps elapsed >= max episode steps) or
-            "TimeLimit.truncated"=False if the environment terminated
+            The environment step ``(observation, reward, terminated, truncated, info)`` with `truncated=True`
+            if the number of steps elapsed >= max episode steps
+
         """
-        observation, reward, done, info = self.env.step(action)
+        observation, reward, terminated, truncated, info = self.env.step(action)
         self._elapsed_steps += 1
+
         if self._elapsed_steps >= self._max_episode_steps:
-            info["TimeLimit.truncated"] = not done
-            done = True
-        return observation, reward, done, info
+            truncated = True
+
+        return observation, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
         """Resets the environment with :param:`**kwargs` and sets the number of steps elapsed to zero.

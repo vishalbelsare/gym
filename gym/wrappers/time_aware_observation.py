@@ -33,6 +33,7 @@ class TimeAwareObservation(gym.ObservationWrapper):
         low = np.append(self.observation_space.low, 0.0)
         high = np.append(self.observation_space.high, np.inf)
         self.observation_space = Box(low, high, dtype=np.float32)
+        self.is_vector_env = getattr(env, "is_vector_env", False)
 
     def observation(self, observation):
         """Adds to the observation with the current time step.

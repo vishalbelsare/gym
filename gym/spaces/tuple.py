@@ -1,15 +1,16 @@
 """Implementation of a space that represents the cartesian product of other spaces."""
-from __future__ import annotations
-
-from typing import Iterable, Optional, Sequence
+from collections.abc import Sequence as CollectionSequence
+from typing import Iterable, Optional
+from typing import Sequence as TypingSequence
+from typing import Tuple as TypingTuple
+from typing import Union
 
 import numpy as np
 
 from gym.spaces.space import Space
-from gym.utils import seeding
 
 
-class Tuple(Space[tuple], Sequence):
+class Tuple(Space[tuple], CollectionSequence):
     """A tuple (more precisely: the cartesian product) of :class:`Space` instances.
 
     Elements of this space are tuples of elements of the constituent spaces.
@@ -25,9 +26,9 @@ class Tuple(Space[tuple], Sequence):
     def __init__(
         self,
         spaces: Iterable[Space],
-        seed: Optional[int | list[int] | seeding.RandomNumberGenerator] = None,
+        seed: Optional[Union[int, TypingSequence[int], np.random.Generator]] = None,
     ):
-        r"""Constructor of :class:`Tuple`` space.
+        r"""Constructor of :class:`Tuple` space.
 
         The generated instance will represent the cartesian product :math:`\text{spaces}[0] \times ... \times \text{spaces}[-1]`.
 
@@ -35,51 +36,83 @@ class Tuple(Space[tuple], Sequence):
             spaces (Iterable[Space]): The spaces that are involved in the cartesian product.
             seed: Optionally, you can use this argument to seed the RNGs of the ``spaces`` to ensure reproducible sampling.
         """
-        spaces = tuple(spaces)
-        self.spaces = spaces
-        for space in spaces:
+        self.spaces = tuple(spaces)
+        for space in self.spaces:
             assert isinstance(
                 space, Space
             ), "Elements of the tuple must be instances of gym.Space"
         super().__init__(None, None, seed)  # type: ignore
 
-    def seed(self, seed: Optional[int | list[int]] = None) -> list:
-        """Seed the PRNG of this space and all subspaces."""
+    @property
+    def is_np_flattenable(self):
+        """Checks whether this space can be flattened to a :class:`spaces.Box`."""
+        return all(space.is_np_flattenable for space in self.spaces)
+
+    def seed(
+        self, seed: Optional[Union[int, TypingSequence[int]]] = None
+    ) -> TypingSequence[int]:
+        """Seed the PRNG of this space and all subspaces.
+
+        Depending on the type of seed, the subspaces will be seeded differently
+        * None - All the subspaces will use a random initial seed
+        * Int - The integer is used to seed the `Tuple` space that is used to generate seed values for each of the subspaces. Warning, this does not guarantee unique seeds for all of the subspaces.
+        * List - Values used to seed the subspaces. This allows the seeding of multiple composite subspaces (`List(42, 54, ...)`).
+
+        Args:
+            seed: An optional list of ints or int to seed the (sub-)spaces.
+        """
         seeds = []
 
-        if isinstance(seed, list):
-            for i, space in enumerate(self.spaces):
-                seeds += space.seed(seed[i])
+        if isinstance(seed, CollectionSequence):
+            assert len(seed) == len(
+                self.spaces
+            ), f"Expects that the subspaces of seeds equals the number of subspaces. Actual length of seeds: {len(seeds)}, length of subspaces: {len(self.spaces)}"
+            for subseed, space in zip(seed, self.spaces):
+                seeds += space.seed(subseed)
         elif isinstance(seed, int):
             seeds = super().seed(seed)
-            try:
-                subseeds = self.np_random.choice(
-                    np.iinfo(int).max,
-                    size=len(self.spaces),
-                    replace=False,  # unique subseed for each subspace
-                )
-            except ValueError:
-                subseeds = self.np_random.choice(
-                    np.iinfo(int).max,
-                    size=len(self.spaces),
-                    replace=True,  # we get more than INT_MAX subspaces
-                )
-
+            subseeds = self.np_random.integers(
+                np.iinfo(np.int32).max, size=len(self.spaces)
+            )
             for subspace, subseed in zip(self.spaces, subseeds):
-                seeds.append(subspace.seed(int(subseed))[0])
+                seeds += subspace.seed(int(subseed))
         elif seed is None:
             for space in self.spaces:
                 seeds += space.seed(seed)
         else:
-            raise TypeError("Passed seed not of an expected type: list or int or None")
+            raise TypeError(
+                f"Expected seed type: list, tuple, int or None, actual type: {type(seed)}"
+            )
 
         return seeds
 
-    def sample(self) -> tuple:
+    def sample(
+        self, mask: Optional[TypingTuple[Optional[np.ndarray], ...]] = None
+    ) -> tuple:
         """Generates a single random sample inside this space.
 
         This method draws independent samples from the subspaces.
+
+        Args:
+            mask: An optional tuple of optional masks for each of the subspace's samples,
+                expects the same number of masks as spaces
+
+        Returns:
+            Tuple of the subspace's samples
         """
+        if mask is not None:
+            assert isinstance(
+                mask, tuple
+            ), f"Expected type of mask is tuple, actual type: {type(mask)}"
+            assert len(mask) == len(
+                self.spaces
+            ), f"Expected length of mask is {len(self.spaces)}, actual length: {len(mask)}"
+
+            return tuple(
+                space.sample(mask=sub_mask)
+                for space, sub_mask in zip(self.spaces, mask)
+            )
+
         return tuple(space.sample() for space in self.spaces)
 
     def contains(self, x) -> bool:
@@ -96,7 +129,7 @@ class Tuple(Space[tuple], Sequence):
         """Gives a string representation of this space."""
         return "Tuple(" + ", ".join([str(s) for s in self.spaces]) + ")"
 
-    def to_jsonable(self, sample_n: Sequence) -> list:
+    def to_jsonable(self, sample_n: CollectionSequence) -> list:
         """Convert a batch of samples from this space to a JSONable data type."""
         # serialize as list-repr of tuple of vectors
         return [

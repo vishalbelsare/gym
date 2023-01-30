@@ -2,7 +2,6 @@
 import numpy as np
 
 import gym
-from gym.error import DependencyNotInstalled
 from gym.spaces import Box
 
 try:
@@ -46,7 +45,7 @@ class AtariPreprocessing(gym.Wrapper):
             noop_max (int): For No-op reset, the max number no-ops actions are taken at reset, to turn off, set to 0.
             frame_skip (int): The number of frames between new observation the agents observations effecting the frequency at which the agent experiences the game.
             screen_size (int): resize Atari frame
-            terminal_on_life_loss (bool): `if True`, then :meth:`step()` returns `done=True` whenever a
+            terminal_on_life_loss (bool): `if True`, then :meth:`step()` returns `terminated=True` whenever a
                 life is lost.
             grayscale_obs (bool): if True, then gray scale observation is returned, otherwise, RGB observation
                 is returned.
@@ -54,10 +53,14 @@ class AtariPreprocessing(gym.Wrapper):
                 grayscale observations to make them 3-dimensional.
             scale_obs (bool): if True, then observation normalized in range [0,1) is returned. It also limits memory
                 optimization benefits of FrameStack Wrapper.
+
+        Raises:
+            DependencyNotInstalled: opencv-python package not installed
+            ValueError: Disable frame-skipping in the original env
         """
         super().__init__(env)
         if cv2 is None:
-            raise DependencyNotInstalled(
+            raise gym.error.DependencyNotInstalled(
                 "opencv-python package not installed, run `pip install gym[other]` to get dependencies for atari"
             )
         assert frame_skip > 0
@@ -83,6 +86,7 @@ class AtariPreprocessing(gym.Wrapper):
         self.scale_obs = scale_obs
 
         # buffer of most recent two observations for max pooling
+        assert isinstance(env.observation_space, Box)
         if grayscale_obs:
             self.obs_buffer = [
                 np.empty(env.observation_space.shape[:2], dtype=np.uint8),
@@ -94,7 +98,6 @@ class AtariPreprocessing(gym.Wrapper):
                 np.empty(env.observation_space.shape, dtype=np.uint8),
             ]
 
-        self.ale = env.unwrapped.ale
         self.lives = 0
         self.game_over = False
 
@@ -108,22 +111,27 @@ class AtariPreprocessing(gym.Wrapper):
             low=_low, high=_high, shape=_shape, dtype=_obs_dtype
         )
 
+    @property
+    def ale(self):
+        """Make ale as a class property to avoid serialization error."""
+        return self.env.unwrapped.ale
+
     def step(self, action):
         """Applies the preprocessing for an :meth:`env.step`."""
-        total_reward = 0.0
+        total_reward, terminated, truncated, info = 0.0, False, False, {}
 
         for t in range(self.frame_skip):
-            _, reward, done, info = self.env.step(action)
+            _, reward, terminated, truncated, info = self.env.step(action)
             total_reward += reward
-            self.game_over = done
+            self.game_over = terminated
 
             if self.terminal_on_life_loss:
                 new_lives = self.ale.lives()
-                done = done or new_lives < self.lives
-                self.game_over = done
+                terminated = terminated or new_lives < self.lives
+                self.game_over = terminated
                 self.lives = new_lives
 
-            if done:
+            if terminated or truncated:
                 break
             if t == self.frame_skip - 2:
                 if self.grayscale_obs:
@@ -135,16 +143,12 @@ class AtariPreprocessing(gym.Wrapper):
                     self.ale.getScreenGrayscale(self.obs_buffer[0])
                 else:
                     self.ale.getScreenRGB(self.obs_buffer[0])
-        return self._get_obs(), total_reward, done, info
+        return self._get_obs(), total_reward, terminated, truncated, info
 
     def reset(self, **kwargs):
         """Resets the environment using preprocessing."""
         # NoopReset
-        if kwargs.get("return_info", False):
-            _, reset_info = self.env.reset(**kwargs)
-        else:
-            _ = self.env.reset(**kwargs)
-            reset_info = {}
+        _, reset_info = self.env.reset(**kwargs)
 
         noops = (
             self.env.unwrapped.np_random.integers(1, self.noop_max + 1)
@@ -152,14 +156,10 @@ class AtariPreprocessing(gym.Wrapper):
             else 0
         )
         for _ in range(noops):
-            _, _, done, step_info = self.env.step(0)
+            _, _, terminated, truncated, step_info = self.env.step(0)
             reset_info.update(step_info)
-            if done:
-                if kwargs.get("return_info", False):
-                    _, reset_info = self.env.reset(**kwargs)
-                else:
-                    _ = self.env.reset(**kwargs)
-                    reset_info = {}
+            if terminated or truncated:
+                _, reset_info = self.env.reset(**kwargs)
 
         self.lives = self.ale.lives()
         if self.grayscale_obs:
@@ -168,14 +168,12 @@ class AtariPreprocessing(gym.Wrapper):
             self.ale.getScreenRGB(self.obs_buffer[0])
         self.obs_buffer[1].fill(0)
 
-        if kwargs.get("return_info", False):
-            return self._get_obs(), reset_info
-        else:
-            return self._get_obs()
+        return self._get_obs(), reset_info
 
     def _get_obs(self):
         if self.frame_skip > 1:  # more efficient in-place pooling
             np.maximum(self.obs_buffer[0], self.obs_buffer[1], out=self.obs_buffer[0])
+        assert cv2 is not None
         obs = cv2.resize(
             self.obs_buffer[0],
             (self.screen_size, self.screen_size),

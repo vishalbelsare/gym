@@ -1,6 +1,6 @@
 """Wrapper for recording videos."""
 import os
-from typing import Callable
+from typing import Callable, Optional
 
 import gym
 from gym import logger
@@ -11,6 +11,12 @@ def capped_cubic_video_schedule(episode_id: int) -> bool:
     """The default episode trigger.
 
     This function will trigger recordings at the episode indices 0, 1, 4, 8, 27, ..., :math:`k^3`, ..., 729, 1000, 2000, 3000, ...
+
+    Args:
+        episode_id: The episode number
+
+    Returns:
+        If to apply a video schedule number
     """
     if episode_id < 1000:
         return int(round(episode_id ** (1.0 / 3))) ** 3 == episode_id
@@ -26,7 +32,7 @@ class RecordVideo(gym.Wrapper):
     They should be functions returning a boolean that indicates whether a recording should be started at the
     current episode or step, respectively.
     If neither :attr:`episode_trigger` nor ``step_trigger`` is passed, a default ``episode_trigger`` will be employed.
-    By default, the recording will be stopped once a `done` signal has been emitted by the environment. However, you can
+    By default, the recording will be stopped once a `terminated` or `truncated` signal has been emitted by the environment. However, you can
     also create recordings of fixed length (possibly spanning several episodes) by passing a strictly positive value for
     ``video_length``.
     """
@@ -61,7 +67,7 @@ class RecordVideo(gym.Wrapper):
 
         self.episode_trigger = episode_trigger
         self.step_trigger = step_trigger
-        self.video_recorder = None
+        self.video_recorder: Optional[video_recorder.VideoRecorder] = None
 
         self.video_folder = os.path.abspath(video_folder)
         # Create output folder if needed
@@ -77,6 +83,8 @@ class RecordVideo(gym.Wrapper):
         self.video_length = video_length
 
         self.recording = False
+        self.terminated = False
+        self.truncated = False
         self.recorded_frames = 0
         self.is_vector_env = getattr(env, "is_vector_env", False)
         self.episode_id = 0
@@ -84,7 +92,17 @@ class RecordVideo(gym.Wrapper):
     def reset(self, **kwargs):
         """Reset the environment using kwargs and then starts recording if video enabled."""
         observations = super().reset(**kwargs)
-        if not self.recording and self._video_enabled():
+        self.terminated = False
+        self.truncated = False
+        if self.recording:
+            assert self.video_recorder is not None
+            self.video_recorder.frames = []
+            self.video_recorder.capture_frame()
+            self.recorded_frames += 1
+            if self.video_length > 0:
+                if self.recorded_frames > self.video_length:
+                    self.close_video_recorder()
+        elif self._video_enabled():
             self.start_video_recorder()
         return observations
 
@@ -115,40 +133,73 @@ class RecordVideo(gym.Wrapper):
 
     def step(self, action):
         """Steps through the environment using action, recording observations if :attr:`self.recording`."""
-        observations, rewards, dones, infos = super().step(action)
+        (
+            observations,
+            rewards,
+            terminateds,
+            truncateds,
+            infos,
+        ) = self.env.step(action)
 
-        # increment steps and episodes
-        self.step_id += 1
-        if not self.is_vector_env:
-            if dones:
+        if not (self.terminated or self.truncated):
+            # increment steps and episodes
+            self.step_id += 1
+            if not self.is_vector_env:
+                if terminateds or truncateds:
+                    self.episode_id += 1
+                    self.terminated = terminateds
+                    self.truncated = truncateds
+            elif terminateds[0] or truncateds[0]:
                 self.episode_id += 1
-        elif dones[0]:
-            self.episode_id += 1
+                self.terminated = terminateds[0]
+                self.truncated = truncateds[0]
 
-        if self.recording:
-            self.video_recorder.capture_frame()
-            self.recorded_frames += 1
-            if self.video_length > 0:
-                if self.recorded_frames > self.video_length:
-                    self.close_video_recorder()
-            else:
-                if not self.is_vector_env:
-                    if dones:
+            if self.recording:
+                assert self.video_recorder is not None
+                self.video_recorder.capture_frame()
+                self.recorded_frames += 1
+                if self.video_length > 0:
+                    if self.recorded_frames > self.video_length:
                         self.close_video_recorder()
-                elif dones[0]:
-                    self.close_video_recorder()
+                else:
+                    if not self.is_vector_env:
+                        if terminateds or truncateds:
+                            self.close_video_recorder()
+                    elif terminateds[0] or truncateds[0]:
+                        self.close_video_recorder()
 
-        elif self._video_enabled():
-            self.start_video_recorder()
+            elif self._video_enabled():
+                self.start_video_recorder()
 
-        return observations, rewards, dones, infos
+        return observations, rewards, terminateds, truncateds, infos
 
     def close_video_recorder(self):
         """Closes the video recorder if currently recording."""
         if self.recording:
+            assert self.video_recorder is not None
             self.video_recorder.close()
         self.recording = False
         self.recorded_frames = 1
+
+    def render(self, *args, **kwargs):
+        """Compute the render frames as specified by render_mode attribute during initialization of the environment or as specified in kwargs."""
+        if self.video_recorder is None or not self.video_recorder.enabled:
+            return super().render(*args, **kwargs)
+
+        if len(self.video_recorder.render_history) > 0:
+            recorded_frames = [
+                self.video_recorder.render_history.pop()
+                for _ in range(len(self.video_recorder.render_history))
+            ]
+            if self.recording:
+                return recorded_frames
+            else:
+                return recorded_frames + super().render(*args, **kwargs)
+        else:
+            if self.recording:
+                return self.video_recorder.last_frame
+            else:
+                return super().render(*args, **kwargs)
 
     def close(self):
         """Closes the wrapper then the video recorder."""

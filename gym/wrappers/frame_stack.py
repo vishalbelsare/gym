@@ -26,6 +26,9 @@ class LazyFrames:
         Args:
             frames (list): The frames to convert to lazy frames
             lz4_compress (bool): Use lz4 to compress the frames internally
+
+        Raises:
+            DependencyNotInstalled: lz4 is not installed
         """
         self.frame_shape = tuple(frames[0].shape)
         self.shape = (len(frames),) + self.frame_shape
@@ -119,7 +122,12 @@ class FrameStack(gym.ObservationWrapper):
         (4, 96, 96, 3)
     """
 
-    def __init__(self, env: gym.Env, num_stack: int, lz4_compress: bool = False):
+    def __init__(
+        self,
+        env: gym.Env,
+        num_stack: int,
+        lz4_compress: bool = False,
+    ):
         """Observation wrapper that stacks the observations in a rolling manner.
 
         Args:
@@ -160,11 +168,11 @@ class FrameStack(gym.ObservationWrapper):
             action: The action to step through the environment with
 
         Returns:
-            Stacked observations, reward, done and information from the environment
+            Stacked observations, reward, terminated, truncated, and information from the environment
         """
-        observation, reward, done, info = self.env.step(action)
+        observation, reward, terminated, truncated, info = self.env.step(action)
         self.frames.append(observation)
-        return self.observation(None), reward, done, info
+        return self.observation(None), reward, terminated, truncated, info
 
     def reset(self, **kwargs):
         """Reset the environment with kwargs.
@@ -175,14 +183,8 @@ class FrameStack(gym.ObservationWrapper):
         Returns:
             The stacked observations
         """
-        if kwargs.get("return_info", False):
-            obs, info = self.env.reset(**kwargs)
-        else:
-            obs = self.env.reset(**kwargs)
-            info = None  # Unused
+        obs, info = self.env.reset(**kwargs)
+
         [self.frames.append(obs) for _ in range(self.num_stack)]
 
-        if kwargs.get("return_info", False):
-            return self.observation(None), info
-        else:
-            return self.observation(None)
+        return self.observation(None), info

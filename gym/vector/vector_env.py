@@ -1,10 +1,9 @@
 """Base class for vectorized environments."""
-from __future__ import annotations
+from typing import Any, List, Optional, Tuple, Union
 
-from typing import Any, Optional, Union
+import numpy as np
 
 import gym
-from gym.logger import deprecation
 from gym.vector.utils.spaces import batch_space
 
 __all__ = ["VectorEnv"]
@@ -24,7 +23,10 @@ class VectorEnv(gym.Env):
     """
 
     def __init__(
-        self, num_envs: int, observation_space: gym.Space, action_space: gym.Space
+        self,
+        num_envs: int,
+        observation_space: gym.Space,
+        action_space: gym.Space,
     ):
         """Base class for vectorized environments.
 
@@ -48,61 +50,79 @@ class VectorEnv(gym.Env):
 
     def reset_async(
         self,
-        seed: Optional[Union[int, list[int]]] = None,
-        return_info: bool = False,
+        seed: Optional[Union[int, List[int]]] = None,
         options: Optional[dict] = None,
     ):
         """Reset the sub-environments asynchronously.
 
-        This method will return ``None``. A call to :meth:`reset_async` should be followed by a call to :meth:`reset_wait` to retrieve the results.
+        This method will return ``None``. A call to :meth:`reset_async` should be followed
+        by a call to :meth:`reset_wait` to retrieve the results.
+
+        Args:
+            seed: The reset seed
+            options: Reset options
         """
         pass
 
     def reset_wait(
         self,
-        seed: Optional[Union[int, list[int]]] = None,
-        return_info: bool = False,
+        seed: Optional[Union[int, List[int]]] = None,
         options: Optional[dict] = None,
     ):
         """Retrieves the results of a :meth:`reset_async` call.
 
         A call to this method must always be preceded by a call to :meth:`reset_async`.
+
+        Args:
+            seed: The reset seed
+            options: Reset options
+
+        Returns:
+            The results from :meth:`reset_async`
+
+        Raises:
+            NotImplementedError: VectorEnv does not implement function
         """
-        raise NotImplementedError()
+        raise NotImplementedError("VectorEnv does not implement function")
 
     def reset(
         self,
         *,
-        seed: Optional[Union[int, list[int]]] = None,
-        return_info: bool = False,
+        seed: Optional[Union[int, List[int]]] = None,
         options: Optional[dict] = None,
     ):
         """Reset all parallel environments and return a batch of initial observations.
 
         Args:
             seed: The environment reset seeds
-            return_info: If to return the info
             options: If to return the options
 
         Returns:
             A batch of observations from the vectorized environment.
         """
-        self.reset_async(seed=seed, return_info=return_info, options=options)
-        return self.reset_wait(seed=seed, return_info=return_info, options=options)
+        self.reset_async(seed=seed, options=options)
+        return self.reset_wait(seed=seed, options=options)
 
     def step_async(self, actions):
         """Asynchronously performs steps in the sub-environments.
 
         The results can be retrieved via a call to :meth:`step_wait`.
+
+        Args:
+            actions: The actions to take asynchronously
         """
-        pass
 
     def step_wait(self, **kwargs):
         """Retrieves the results of a :meth:`step_async` call.
 
         A call to this method must always be preceded by a call to :meth:`step_async`.
+
+        Args:
+            **kwargs: Additional keywords for vector implementation
+
+        Returns:
+            The results from the :meth:`step_async` call
         """
-        raise NotImplementedError()
 
     def step(self, actions):
         """Take an action for each parallel environment.
@@ -111,20 +131,18 @@ class VectorEnv(gym.Env):
             actions: element of :attr:`action_space` Batch of actions.
 
         Returns:
-            Batch of observations, rewards, done and infos
+            Batch of (observations, rewards, terminated, truncated, infos) or (observations, rewards, dones, infos)
         """
         self.step_async(actions)
         return self.step_wait()
 
     def call_async(self, name, *args, **kwargs):
         """Calls a method name for each parallel environment asynchronously."""
-        pass
 
-    def call_wait(self, **kwargs):
+    def call_wait(self, **kwargs) -> List[Any]:  # type: ignore
         """After calling a method in :meth:`call_async`, this function collects the results."""
-        raise NotImplementedError()
 
-    def call(self, name: str, *args, **kwargs) -> list[Any]:
+    def call(self, name: str, *args, **kwargs) -> List[Any]:
         """Call a method, or get a property, from each parallel environment.
 
         Args:
@@ -158,7 +176,6 @@ class VectorEnv(gym.Env):
                 tuple, then it corresponds to the values for each individual environment, otherwise a single value
                 is set for all environments.
         """
-        raise NotImplementedError()
 
     def close_extras(self, **kwargs):
         """Clean up the extra resources e.g. beyond what's in this base class."""
@@ -178,6 +195,8 @@ class VectorEnv(gym.Env):
         Notes:
             This will be automatically called when garbage collected or program exited.
 
+        Args:
+            **kwargs: Keyword arguments passed to :meth:`close_extras`
         """
         if self.closed:
             return
@@ -186,28 +205,69 @@ class VectorEnv(gym.Env):
         self.close_extras(**kwargs)
         self.closed = True
 
-    def seed(self, seed=None):
-        """Set the random seed in all parallel environments.
+    def _add_info(self, infos: dict, info: dict, env_num: int) -> dict:
+        """Add env info to the info dictionary of the vectorized environment.
+
+        Given the `info` of a single environment add it to the `infos` dictionary
+        which represents all the infos of the vectorized environment.
+        Every `key` of `info` is paired with a boolean mask `_key` representing
+        whether or not the i-indexed environment has this `info`.
 
         Args:
-            seed: Random seed for each parallel environment. If ``seed`` is a list of
-                length ``num_envs``, then the items of the list are chosen as random
-                seeds. If ``seed`` is an int, then each parallel environment uses the random
-                seed ``seed + n``, where ``n`` is the index of the parallel environment
-                (between ``0`` and ``num_envs - 1``).
+            infos (dict): the infos of the vectorized environment
+            info (dict): the info coming from the single environment
+            env_num (int): the index of the single environment
+
+        Returns:
+            infos (dict): the (updated) infos of the vectorized environment
+
         """
-        deprecation(
-            "Function `env.seed(seed)` is marked as deprecated and will be removed in the future. "
-            "Please use `env.reset(seed=seed) instead in VectorEnvs."
-        )
+        for k in info.keys():
+            if k not in infos:
+                info_array, array_mask = self._init_info_arrays(type(info[k]))
+            else:
+                info_array, array_mask = infos[k], infos[f"_{k}"]
+
+            info_array[env_num], array_mask[env_num] = info[k], True
+            infos[k], infos[f"_{k}"] = info_array, array_mask
+        return infos
+
+    def _init_info_arrays(self, dtype: type) -> Tuple[np.ndarray, np.ndarray]:
+        """Initialize the info array.
+
+        Initialize the info array. If the dtype is numeric
+        the info array will have the same dtype, otherwise
+        will be an array of `None`. Also, a boolean array
+        of the same length is returned. It will be used for
+        assessing which environment has info data.
+
+        Args:
+            dtype (type): data type of the info coming from the env.
+
+        Returns:
+            array (np.ndarray): the initialized info array.
+            array_mask (np.ndarray): the initialized boolean array.
+
+        """
+        if dtype in [int, float, bool] or issubclass(dtype, np.number):
+            array = np.zeros(self.num_envs, dtype=dtype)
+        else:
+            array = np.zeros(self.num_envs, dtype=object)
+            array[:] = None
+        array_mask = np.zeros(self.num_envs, dtype=bool)
+        return array, array_mask
 
     def __del__(self):
         """Closes the vector environment."""
         if not getattr(self, "closed", True):
             self.close()
 
-    def __repr__(self):
-        """Returns a string representation of the vector environment using the class name, number of environments and environment spec id."""
+    def __repr__(self) -> str:
+        """Returns a string representation of the vector environment.
+
+        Returns:
+            A string containing the class name, number of environments and environment spec id
+        """
         if self.spec is None:
             return f"{self.__class__.__name__}({self.num_envs})"
         else:
@@ -248,9 +308,6 @@ class VectorEnvWrapper(VectorEnv):
 
     def close_extras(self, **kwargs):
         return self.env.close_extras(**kwargs)
-
-    def seed(self, seed=None):
-        return self.env.seed(seed)
 
     def call(self, name, *args, **kwargs):
         return self.env.call(name, *args, **kwargs)

@@ -1,51 +1,65 @@
-from typing import List
-
 import numpy as np
 import pytest
 
-from gym import envs
+import gym
+from gym import spaces
 from gym.envs.registration import EnvSpec
-from gym.spaces.box import Box
-from gym.spaces.discrete import Discrete
-from gym.spaces.space import Space
-from tests.envs.spec_list import SKIP_MUJOCO_WARNING_MESSAGE, skip_mujoco, spec_list
-
-ENVIRONMENT_IDS = ("HalfCheetah-v2",)
+from tests.envs.utils import all_testing_initialised_envs, mujoco_testing_env_specs
 
 
-def make_envs_by_action_space_type(spec_list: List[EnvSpec], action_space: Space):
-    """Make environments of specific action_space type.
+@pytest.mark.parametrize(
+    "env_spec",
+    mujoco_testing_env_specs,
+    ids=[env_spec.id for env_spec in mujoco_testing_env_specs],
+)
+def test_mujoco_action_dimensions(env_spec: EnvSpec):
+    """Test that for all mujoco environment, mis-dimensioned actions, an error is raised.
 
-    This function returns a filtered list of environment from the
-    spec_list that matches the action_space type.
-
-    Args:
-        spec_list (list): list of registered environments' specification
-        action_space (gym.spaces.Space): action_space type
+    Types of mis-dimensioned actions:
+     * Too few actions
+     * Too many actions
+     * Too few dimensions
+     * Too many dimensions
+     * Incorrect shape
     """
-    filtered_envs = []
-    for spec in spec_list:
-        env = envs.make(spec.id)
-        if isinstance(env.action_space, action_space):
-            filtered_envs.append(env)
-    return filtered_envs
-
-
-@pytest.mark.skipif(skip_mujoco, reason=SKIP_MUJOCO_WARNING_MESSAGE)
-@pytest.mark.parametrize("environment_id", ENVIRONMENT_IDS)
-def test_serialize_deserialize(environment_id):
-    env = envs.make(environment_id)
+    env = env_spec.make(disable_env_checker=True)
     env.reset()
 
+    # Too few actions
     with pytest.raises(ValueError, match="Action dimension mismatch"):
-        env.step([0.1])
+        env.step(env.action_space.sample()[1:])
 
+    # Too many actions
+    with pytest.raises(ValueError, match="Action dimension mismatch"):
+        env.step(np.append(env.action_space.sample(), 0))
+
+    # Too few dimensions
     with pytest.raises(ValueError, match="Action dimension mismatch"):
         env.step(0.1)
 
+    # Too many dimensions
+    with pytest.raises(ValueError, match="Action dimension mismatch"):
+        env.step(np.expand_dims(env.action_space.sample(), 0))
 
-@pytest.mark.parametrize("env", make_envs_by_action_space_type(spec_list, Discrete))
-def test_discrete_actions_out_of_bound(env):
+    # Incorrect shape
+    with pytest.raises(ValueError, match="Action dimension mismatch"):
+        env.step(np.expand_dims(env.action_space.sample(), 1))
+
+    env.close()
+
+
+DISCRETE_ENVS = list(
+    filter(
+        lambda env: isinstance(env.action_space, spaces.Discrete),
+        all_testing_initialised_envs,
+    )
+)
+
+
+@pytest.mark.parametrize(
+    "env", DISCRETE_ENVS, ids=[env.spec.id for env in DISCRETE_ENVS]
+)
+def test_discrete_actions_out_of_bound(env: gym.Env):
     """Test out of bound actions in Discrete action_space.
 
     In discrete action_space environments, `out-of-bound`
@@ -54,20 +68,27 @@ def test_discrete_actions_out_of_bound(env):
     Args:
         env (gym.Env): the gym environment
     """
+    assert isinstance(env.action_space, spaces.Discrete)
+    upper_bound = env.action_space.start + env.action_space.n - 1
+
     env.reset()
-
-    action_space = env.action_space
-    upper_bound = action_space.start + action_space.n - 1
-
     with pytest.raises(Exception):
         env.step(upper_bound + 1)
 
+    env.close()
 
-@pytest.mark.parametrize(
-    ("env", "seed"),
-    [(env, 42) for env in make_envs_by_action_space_type(spec_list, Box)],
+
+BOX_ENVS = list(
+    filter(
+        lambda env: isinstance(env.action_space, spaces.Box),
+        all_testing_initialised_envs,
+    )
 )
-def test_box_actions_out_of_bound(env, seed):
+OOB_VALUE = 100
+
+
+@pytest.mark.parametrize("env", BOX_ENVS, ids=[env.spec.id for env in BOX_ENVS])
+def test_box_actions_out_of_bound(env: gym.Env):
     """Test out of bound actions in Box action_space.
 
     Environments with Box actions spaces perform clipping inside `step`.
@@ -76,17 +97,14 @@ def test_box_actions_out_of_bound(env, seed):
 
     Args:
         env (gym.Env): the gym environment
-        seed (int): seed value for determinism
     """
-    OOB_VALUE = 100
+    env.reset(seed=42)
 
-    env.reset(seed=seed)
+    oob_env = gym.make(env.spec.id, disable_env_checker=True)
+    oob_env.reset(seed=42)
 
-    oob_env = envs.make(env.spec.id)
-    oob_env.reset(seed=seed)
-
+    assert isinstance(env.action_space, spaces.Box)
     dtype = env.action_space.dtype
-
     upper_bounds = env.action_space.high
     lower_bounds = env.action_space.low
 
@@ -94,21 +112,25 @@ def test_box_actions_out_of_bound(env, seed):
         zip(env.action_space.bounded_above, env.action_space.bounded_below)
     ):
         if is_upper_bound:
-            obs, _, _, _ = env.step(upper_bounds)
+            obs, _, _, _, _ = env.step(upper_bounds)
             oob_action = upper_bounds.copy()
             oob_action[i] += np.cast[dtype](OOB_VALUE)
 
             assert oob_action[i] > upper_bounds[i]
-            oob_obs, _, _, _ = oob_env.step(oob_action)
+            oob_obs, _, _, _, _ = oob_env.step(oob_action)
 
             assert np.alltrue(obs == oob_obs)
 
         if is_lower_bound:
-            obs, _, _, _ = env.step(lower_bounds)
+            obs, _, _, _, _ = env.step(
+                lower_bounds
+            )  # `env` is unwrapped, and in new step API
             oob_action = lower_bounds.copy()
             oob_action[i] -= np.cast[dtype](OOB_VALUE)
 
             assert oob_action[i] < lower_bounds[i]
-            oob_obs, _, _, _ = oob_env.step(oob_action)
+            oob_obs, _, _, _, _ = oob_env.step(oob_action)
 
             assert np.alltrue(obs == oob_obs)
+
+    env.close()

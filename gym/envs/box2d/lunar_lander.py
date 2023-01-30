@@ -2,7 +2,7 @@ __credits__ = ["Andrea PIERRÉ"]
 
 import math
 import warnings
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
@@ -10,6 +10,7 @@ import gym
 from gym import error, spaces
 from gym.error import DependencyNotInstalled
 from gym.utils import EzPickle, colorize
+from gym.utils.step_api_compatibility import step_api_compatibility
 
 try:
     import Box2D
@@ -23,6 +24,11 @@ try:
     )
 except ImportError:
     raise DependencyNotInstalled("box2d is not installed, run `pip install gym[box2d]`")
+
+
+if TYPE_CHECKING:
+    import pygame
+
 
 FPS = 50
 SCALE = 30.0  # affects how fast-paced the game is, forces should be adjusted as well
@@ -92,19 +98,25 @@ class LunarLander(gym.Env, EzPickle):
     orientation engine, fire main engine, fire right orientation engine.
 
     ### Observation Space
-    There are 8 states: the coordinates of the lander in `x` & `y`, its linear
+    The state is an 8-dimensional vector: the coordinates of the lander in `x` & `y`, its linear
     velocities in `x` & `y`, its angle, its angular velocity, and two booleans
     that represent whether each leg is in contact with the ground or not.
 
     ### Rewards
-    Reward for moving from the top of the screen to the landing pad and coming
-    to rest is about 100-140 points.
-    If the lander moves away from the landing pad, it loses reward.
-    If the lander crashes, it receives an additional -100 points. If it comes
-    to rest, it receives an additional +100 points. Each leg with ground
-    contact is +10 points.
-    Firing the main engine is -0.3 points each frame. Firing the side engine
-    is -0.03 points each frame. Solved is 200 points.
+    After every step a reward is granted. The total reward of an episode is the
+    sum of the rewards for all the steps within that episode.
+
+    For each step, the reward:
+    - is increased/decreased the closer/further the lander is to the landing pad.
+    - is increased/decreased the slower/faster the lander is moving.
+    - is decreased the more the lander is tilted (angle not horizontal).
+    - is increased by 10 points for each leg that is in contact with the ground.
+    - is decreased by 0.03 points each frame a side engine is firing.
+    - is decreased by 0.3 points each frame the main engine is firing.
+
+    The episode receive an additional reward of -100 or +100 points for crashing or landing safely respectively.
+
+    An episode is considered a solution if it scores at least 200 points.
 
     ### Starting State
     The lander starts at the top center of the viewport with a random initial
@@ -171,17 +183,29 @@ class LunarLander(gym.Env, EzPickle):
     Created by Oleg Klimov
     """
 
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": FPS}
+    metadata = {
+        "render_modes": ["human", "rgb_array"],
+        "render_fps": FPS,
+    }
 
     def __init__(
         self,
+        render_mode: Optional[str] = None,
         continuous: bool = False,
         gravity: float = -10.0,
         enable_wind: bool = False,
         wind_power: float = 15.0,
         turbulence_power: float = 1.5,
     ):
-        EzPickle.__init__(self)
+        EzPickle.__init__(
+            self,
+            render_mode,
+            continuous,
+            gravity,
+            enable_wind,
+            wind_power,
+            turbulence_power,
+        )
 
         assert (
             -12.0 < gravity and gravity < 0.0
@@ -210,12 +234,12 @@ class LunarLander(gym.Env, EzPickle):
         self.wind_idx = np.random.randint(-9999, 9999)
         self.torque_idx = np.random.randint(-9999, 9999)
 
-        self.screen = None
+        self.screen: pygame.Surface = None
         self.clock = None
         self.isopen = True
         self.world = Box2D.b2World(gravity=(0, gravity))
         self.moon = None
-        self.lander = None
+        self.lander: Optional[Box2D.b2Body] = None
         self.particles = []
 
         self.prev_reward = None
@@ -267,6 +291,8 @@ class LunarLander(gym.Env, EzPickle):
             # Nop, fire left engine, main engine, right engine
             self.action_space = spaces.Discrete(4)
 
+        self.render_mode = render_mode
+
     def _destroy(self):
         if not self.moon:
             return
@@ -283,7 +309,6 @@ class LunarLander(gym.Env, EzPickle):
         self,
         *,
         seed: Optional[int] = None,
-        return_info: bool = False,
         options: Optional[dict] = None,
     ):
         super().reset(seed=seed)
@@ -327,7 +352,7 @@ class LunarLander(gym.Env, EzPickle):
         self.moon.color2 = (0.0, 0.0, 0.0)
 
         initial_y = VIEWPORT_H / SCALE
-        self.lander = self.world.CreateDynamicBody(
+        self.lander: Box2D.b2Body = self.world.CreateDynamicBody(
             position=(VIEWPORT_W / SCALE / 2, initial_y),
             angle=0.0,
             fixtures=fixtureDef(
@@ -390,10 +415,9 @@ class LunarLander(gym.Env, EzPickle):
 
         self.drawlist = [self.lander] + self.legs
 
-        if not return_info:
-            return self.step(np.array([0, 0]) if self.continuous else 0)[0]
-        else:
-            return self.step(np.array([0, 0]) if self.continuous else 0)[0], {}
+        if self.render_mode == "human":
+            self.render()
+        return self.step(np.array([0, 0]) if self.continuous else 0)[0], {}
 
     def _create_particle(self, mass, x, y, ttl):
         p = self.world.CreateDynamicBody(
@@ -418,7 +442,10 @@ class LunarLander(gym.Env, EzPickle):
             self.world.DestroyBody(self.particles.pop(0))
 
     def step(self, action):
+        assert self.lander is not None
+
         # Update wind
+        assert self.lander is not None, "You forgot to call reset()"
         if self.enable_wind and not (
             self.legs[0].ground_contact or self.legs[1].ground_contact
         ):
@@ -560,16 +587,27 @@ class LunarLander(gym.Env, EzPickle):
         )  # less fuel spent is better, about -30 for heuristic landing
         reward -= s_power * 0.03
 
-        done = False
+        terminated = False
         if self.game_over or abs(state[0]) >= 1.0:
-            done = True
+            terminated = True
             reward = -100
         if not self.lander.awake:
-            done = True
+            terminated = True
             reward = +100
-        return np.array(state, dtype=np.float32), reward, done, {}
 
-    def render(self, mode="human"):
+        if self.render_mode == "human":
+            self.render()
+        return np.array(state, dtype=np.float32), reward, terminated, False, {}
+
+    def render(self):
+        if self.render_mode is None:
+            gym.logger.warn(
+                "You are calling render method without specifying any render mode. "
+                "You can specify the render_mode at initialization, "
+                f'e.g. gym("{self.spec.id}", render_mode="rgb_array")'
+            )
+            return
+
         try:
             import pygame
             from pygame import gfxdraw
@@ -578,14 +616,14 @@ class LunarLander(gym.Env, EzPickle):
                 "pygame is not installed, run `pip install gym[box2d]`"
             )
 
-        if self.screen is None:
+        if self.screen is None and self.render_mode == "human":
             pygame.init()
             pygame.display.init()
             self.screen = pygame.display.set_mode((VIEWPORT_W, VIEWPORT_H))
         if self.clock is None:
             self.clock = pygame.time.Clock()
 
-        self.surf = pygame.Surface(self.screen.get_size())
+        self.surf = pygame.Surface((VIEWPORT_W, VIEWPORT_H))
 
         pygame.transform.scale(self.surf, (SCALE, SCALE))
         pygame.draw.rect(self.surf, (255, 255, 255), self.surf.get_rect())
@@ -664,19 +702,17 @@ class LunarLander(gym.Env, EzPickle):
                     )
 
         self.surf = pygame.transform.flip(self.surf, False, True)
-        self.screen.blit(self.surf, (0, 0))
 
-        if mode == "human":
+        if self.render_mode == "human":
+            assert self.screen is not None
+            self.screen.blit(self.surf, (0, 0))
             pygame.event.pump()
             self.clock.tick(self.metadata["render_fps"])
             pygame.display.flip()
-
-        if mode == "rgb_array":
+        elif self.render_mode == "rgb_array":
             return np.transpose(
                 np.array(pygame.surfarray.pixels3d(self.surf)), axes=(1, 0, 2)
             )
-        else:
-            return self.isopen
 
     def close(self):
         if self.screen is not None:
@@ -696,15 +732,16 @@ def heuristic(env, s):
     Args:
         env: The environment
         s (list): The state. Attributes:
-                  s[0] is the horizontal coordinate
-                  s[1] is the vertical coordinate
-                  s[2] is the horizontal speed
-                  s[3] is the vertical speed
-                  s[4] is the angle
-                  s[5] is the angular speed
-                  s[6] 1 if first leg has contact, else 0
-                  s[7] 1 if second leg has contact, else 0
-    returns:
+            s[0] is the horizontal coordinate
+            s[1] is the vertical coordinate
+            s[2] is the horizontal speed
+            s[3] is the vertical speed
+            s[4] is the angle
+            s[5] is the angular speed
+            s[6] 1 if first leg has contact, else 0
+            s[7] 1 if second leg has contact, else 0
+
+    Returns:
          a: The heuristic to be fed into the step function defined above to determine the next step and reward.
     """
 
@@ -744,10 +781,10 @@ def demo_heuristic_lander(env, seed=None, render=False):
 
     total_reward = 0
     steps = 0
-    s = env.reset(seed=seed)
+    s, info = env.reset(seed=seed)
     while True:
         a = heuristic(env, s)
-        s, r, done, info = env.step(a)
+        s, r, terminated, truncated, info = step_api_compatibility(env.step(a), True)
         total_reward += r
 
         if render:
@@ -755,11 +792,11 @@ def demo_heuristic_lander(env, seed=None, render=False):
             if still_open is False:
                 break
 
-        if steps % 20 == 0 or done:
+        if steps % 20 == 0 or terminated or truncated:
             print("observations:", " ".join([f"{x:+0.2f}" for x in s]))
             print(f"step {steps} total_reward {total_reward:+0.2f}")
         steps += 1
-        if done:
+        if terminated or truncated:
             break
     if render:
         env.close()

@@ -1,10 +1,14 @@
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://pre-commit.com/) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
+## Important Notice
+
+### The team that has been maintaining Gym since 2021 has moved all future development to [Gymnasium](https://github.com/Farama-Foundation/Gymnasium), a drop in replacement for Gym (import gymnasium as gym), and Gym will not be receiving any future updates. Please switch over to Gymnasium as soon as you're able to do so. If you'd like to read more about the story behind this switch, please check out [this blog post](https://farama.org/Announcing-The-Farama-Foundation).
+
 ## Gym
 
 Gym is an open source Python library for developing and comparing reinforcement learning algorithms by providing a standard API to communicate between learning algorithms and environments, as well as a standard set of environments compliant with that API. Since its release, Gym's API has become the field standard for doing this.
 
-Gym documentation website is at [https://www.gymlibrary.ml/](https://www.gymlibrary.ml/), and you can propose fixes and changes to it [here](https://github.com/Farama-Foundation/gym-docs).
+Gym documentation website is at [https://www.gymlibrary.dev/](https://www.gymlibrary.dev/), and you can propose fixes and changes to it [here](https://github.com/Farama-Foundation/gym-docs).
 
 Gym also has a discord server for development purposes that you can join here: https://discord.gg/nHg2JRN489
 
@@ -23,21 +27,22 @@ The Gym API's API models environments as simple Python `env` classes. Creating e
 ```python
 import gym
 env = gym.make("CartPole-v1")
-observation, info = env.reset(seed=42, return_info=True)
+observation, info = env.reset(seed=42)
 
 for _ in range(1000):
     action = env.action_space.sample()
-    observation, reward, done, info = env.step(action)
+    observation, reward, terminated, truncated, info = env.step(action)
 
-    if done:
-        observation, info = env.reset(return_info=True)
+    if terminated or truncated:
+        observation, info = env.reset()
 env.close()
 ```
 
 ## Notable Related Libraries
 
-* [Stable Baselines 3](https://github.com/DLR-RM/stable-baselines3) is a learning library based on the Gym API. It is designed to cater to complete beginners in the field who want to start learning things quickly.
-* [RL Baselines3 Zoo](https://github.com/DLR-RM/rl-baselines3-zoo) builds upon SB3, containing optimal hyperparameters for Gym environments as well as code to easily find new ones.
+Please note that this is an incomplete list, and just includes libraries that the maintainers most commonly point newcommers to when asked for recommendations.
+
+* [CleanRL](https://github.com/vwxyzjn/cleanrl) is a learning library based on the Gym API. It is designed to cater to newer people in the field and provides very good reference implementations.
 * [Tianshou](https://github.com/thu-ml/tianshou) is a learning library that's geared towards very experienced users and is design to allow for ease in complex algorithm modifications.
 * [RLlib](https://docs.ray.io/en/latest/rllib/index.html) is a learning library that allows for distributed training and inferencing and supports an extraordinarily large number of features throughout the reinforcement learning space.
 * [PettingZoo](https://github.com/Farama-Foundation/PettingZoo) is like Gym, but for environments with multiple agents.
@@ -45,6 +50,11 @@ env.close()
 ## Environment Versioning
 
 Gym keeps strict versioning for reproducibility reasons. All environments end in a suffix like "\_v0".  When changes are made to environments that might impact learning results, the number is increased by one to prevent potential confusion.
+
+## MuJoCo Environments
+
+The latest "\_v4" and future versions of the MuJoCo environments will no longer depend on `mujoco-py`. Instead `mujoco` will be the required dependency for future gym MuJoCo environment versions. Old gym MuJoCo environment versions that depend on `mujoco-py` will still be kept but unmaintained.
+To install the dependencies for the latest gym MuJoCo environments use `pip install gym[mujoco]`. Dependencies for old MuJoCo environments can still be installed by `pip install gym[mujoco_py]`. 
 
 ## Citation
 

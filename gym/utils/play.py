@@ -1,19 +1,24 @@
 """Utilities of visualising an environment."""
-from __future__ import annotations
-
 from collections import deque
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-import pygame
-from pygame import Surface
-from pygame.event import Event
-from pygame.locals import VIDEORESIZE
 
+import gym.error
 from gym import Env, logger
 from gym.core import ActType, ObsType
 from gym.error import DependencyNotInstalled
 from gym.logger import deprecation
+
+try:
+    import pygame
+    from pygame import Surface
+    from pygame.event import Event
+    from pygame.locals import VIDEORESIZE
+except ImportError:
+    raise gym.error.DependencyNotInstalled(
+        "Pygame is not installed, run `pip install gym[classic_control]`"
+    )
 
 try:
     import matplotlib
@@ -35,7 +40,7 @@ class PlayableGame:
     def __init__(
         self,
         env: Env,
-        keys_to_action: Optional[dict[tuple[int], int]] = None,
+        keys_to_action: Optional[Dict[Tuple[int, ...], int]] = None,
         zoom: Optional[float] = None,
     ):
         """Wraps an environment with a dictionary of keyboard buttons to action and if to zoom in on the environment.
@@ -45,6 +50,12 @@ class PlayableGame:
             keys_to_action: The dictionary of keyboard tuples and action value
             zoom: If to zoom in on the environment render
         """
+        if env.render_mode not in {"rgb_array", "rgb_array_list"}:
+            logger.error(
+                "PlayableGame wrapper works only with rgb_array and rgb_array_list render modes, "
+                f"but your environment render_mode = {env.render_mode}."
+            )
+
         self.env = env
         self.relevant_keys = self._get_relevant_keys(keys_to_action)
         self.video_size = self._get_video_size(zoom)
@@ -53,7 +64,7 @@ class PlayableGame:
         self.running = True
 
     def _get_relevant_keys(
-        self, keys_to_action: Optional[dict[tuple[int], int]] = None
+        self, keys_to_action: Optional[Dict[Tuple[int], int]] = None
     ) -> set:
         if keys_to_action is None:
             if hasattr(self.env, "get_keys_to_action"):
@@ -62,26 +73,30 @@ class PlayableGame:
                 keys_to_action = self.env.unwrapped.get_keys_to_action()
             else:
                 raise MissingKeysToAction(
-                    "%s does not have explicit key to action mapping, "
-                    "please specify one manually" % self.env.spec.id
+                    f"{self.env.spec.id} does not have explicit key to action mapping, "
+                    "please specify one manually"
                 )
+        assert isinstance(keys_to_action, dict)
         relevant_keys = set(sum((list(k) for k in keys_to_action.keys()), []))
         return relevant_keys
 
-    def _get_video_size(self, zoom: Optional[float] = None) -> tuple[int, int]:
-        # TODO: this needs to be updated when the render API change goes through
-        rendered = self.env.render(mode="rgb_array")
-        video_size = [rendered.shape[1], rendered.shape[0]]
+    def _get_video_size(self, zoom: Optional[float] = None) -> Tuple[int, int]:
+        rendered = self.env.render()
+        if isinstance(rendered, List):
+            rendered = rendered[-1]
+        assert rendered is not None and isinstance(rendered, np.ndarray)
+        video_size = (rendered.shape[1], rendered.shape[0])
 
         if zoom is not None:
-            video_size = int(video_size[0] * zoom), int(video_size[1] * zoom)
+            video_size = (int(video_size[0] * zoom), int(video_size[1] * zoom))
 
         return video_size
 
     def process_event(self, event: Event):
         """Processes a PyGame event.
 
-        In particular, this function is used to keep track of which buttons are currently pressed and to exit the :func:`play` function when the PyGame window is closed.
+        In particular, this function is used to keep track of which buttons are currently pressed
+        and to exit the :func:`play` function when the PyGame window is closed.
 
         Args:
             event: The event to process
@@ -102,7 +117,7 @@ class PlayableGame:
 
 
 def display_arr(
-    screen: Surface, arr: np.ndarray, video_size: tuple[int, int], transpose: bool
+    screen: Surface, arr: np.ndarray, video_size: Tuple[int, int], transpose: bool
 ):
     """Displays a numpy array on screen.
 
@@ -135,7 +150,8 @@ def play(
 
         >>> import gym
         >>> from gym.utils.play import play
-        >>> play(gym.make("CarRacing-v1"), keys_to_action={"w": np.array([0, 0.7, 0]),
+        >>> play(gym.make("CarRacing-v1", render_mode="rgb_array"), keys_to_action={
+        ...                                                "w": np.array([0, 0.7, 0]),
         ...                                                "a": np.array([-1, 0, 0]),
         ...                                                "s": np.array([0, 0, 1]),
         ...                                                "d": np.array([1, 0, 0]),
@@ -154,7 +170,7 @@ def play(
     :class:`gym.utils.play.PlayPlot`. Here's a sample code for plotting the reward
     for last 150 steps.
 
-        >>> def callback(obs_t, obs_tp1, action, rew, done, info):
+        >>> def callback(obs_t, obs_tp1, action, rew, terminated, truncated, info):
         ...        return [rew,]
         >>> plotter = PlayPlot(callback, 150, ["reward"])
         >>> play(gym.make("ALE/AirRaid-v5"), callback=plotter.callback)
@@ -171,7 +187,8 @@ def play(
                 obs_tp1: observation after performing action
                 action: action that was executed
                 rew: reward that was received
-                done: whether the environment is done or not
+                terminated: whether the environment is terminated or not
+                truncated: whether the environment is truncated or not
                 info: debug info
         keys_to_action:  Mapping from keys pressed to action performed.
             Different formats are supported: Key combinations can either be expressed as a tuple of unicode code
@@ -202,8 +219,19 @@ def play(
     """
     env.reset(seed=seed)
 
-    key_code_to_action = {}
+    if keys_to_action is None:
+        if hasattr(env, "get_keys_to_action"):
+            keys_to_action = env.get_keys_to_action()
+        elif hasattr(env.unwrapped, "get_keys_to_action"):
+            keys_to_action = env.unwrapped.get_keys_to_action()
+        else:
+            raise MissingKeysToAction(
+                f"{env.spec.id} does not have explicit key to action mapping, "
+                "please specify one manually"
+            )
+    assert keys_to_action is not None
 
+    key_code_to_action = {}
     for key_combination, action in keys_to_action.items():
         key_code = tuple(
             sorted(ord(key) if isinstance(key, str) else key for key in key_combination)
@@ -215,7 +243,7 @@ def play(
     if fps is None:
         fps = env.metadata.get("render_fps", 30)
 
-    done = True
+    done, obs = True, None
     clock = pygame.time.Clock()
 
     while game.running:
@@ -225,12 +253,15 @@ def play(
         else:
             action = key_code_to_action.get(tuple(sorted(game.pressed_keys)), noop)
             prev_obs = obs
-            obs, rew, done, info = env.step(action)
+            obs, rew, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             if callback is not None:
-                callback(prev_obs, obs, action, rew, done, info)
+                callback(prev_obs, obs, action, rew, terminated, truncated, info)
         if obs is not None:
-            # TODO: this needs to be updated when the render API change goes through
-            rendered = env.render(mode="rgb_array")
+            rendered = env.render()
+            if isinstance(rendered, List):
+                rendered = rendered[-1]
+            assert rendered is not None and isinstance(rendered, np.ndarray)
             display_arr(
                 game.screen, rendered, transpose=transpose, video_size=game.video_size
             )
@@ -252,26 +283,28 @@ class PlayPlot:
         - obs_tp1: observation after performing action
         - action: action that was executed
         - rew: reward that was received
-        - done: whether the environment is done or not
+        - terminated: whether the environment is terminated or not
+        - truncated: whether the environment is truncated or not
         - info: debug info
 
     It should return a list of metrics that are computed from this data.
     For instance, the function may look like this::
 
-        def compute_metrics(obs_t, obs_tp, action, reward, done, info):
-            return [reward, info["cumulative_reward"], np.linalg.norm(action)]
+        >>> def compute_metrics(obs_t, obs_tp, action, reward, terminated, truncated, info):
+        ...     return [reward, info["cumulative_reward"], np.linalg.norm(action)]
 
     :class:`PlayPlot` provides the method :meth:`callback` which will pass its arguments along to that function
     and uses the returned values to update live plots of the metrics.
 
     Typically, this :meth:`callback` will be used in conjunction with :func:`play` to see how the metrics evolve as you play::
 
-        >>> plotter = PlayPlot(compute_metrics, horizon_timesteps=200, plot_names=["Immediate Rew.", "Cumulative Rew.", "Action Magnitude"])
+        >>> plotter = PlayPlot(compute_metrics, horizon_timesteps=200,
+        ...                    plot_names=["Immediate Rew.", "Cumulative Rew.", "Action Magnitude"])
         >>> play(your_env, callback=plotter.callback)
     """
 
     def __init__(
-        self, callback: callable, horizon_timesteps: int, plot_names: list[str]
+        self, callback: callable, horizon_timesteps: int, plot_names: List[str]
     ):
         """Constructor of :class:`PlayPlot`.
 
@@ -282,6 +315,9 @@ class PlayPlot:
             callback: Function that computes metrics from environment transitions
             horizon_timesteps: The time horizon used for the live plots
             plot_names: List of plot titles
+
+        Raises:
+            DependencyNotInstalled: If matplotlib is not installed
         """
         deprecation(
             "`PlayPlot` is marked as deprecated and will be removed in the near future."
@@ -302,7 +338,7 @@ class PlayPlot:
         for axis, name in zip(self.ax, plot_names):
             axis.set_title(name)
         self.t = 0
-        self.cur_plot = [None for _ in range(num_plots)]
+        self.cur_plot: List[Optional[plt.Axes]] = [None for _ in range(num_plots)]
         self.data = [deque(maxlen=horizon_timesteps) for _ in range(num_plots)]
 
     def callback(
@@ -311,7 +347,8 @@ class PlayPlot:
         obs_tp1: ObsType,
         action: ActType,
         rew: float,
-        done: bool,
+        terminated: bool,
+        truncated: bool,
         info: dict,
     ):
         """The callback that calls the provided data callback and adds the data to the plots.
@@ -321,10 +358,13 @@ class PlayPlot:
             obs_tp1: The observation at time step t+1
             action: The action
             rew: The reward
-            done: If the environment is done
+            terminated: If the environment is terminated
+            truncated: If the environment is truncated
             info: The information from the environment
         """
-        points = self.data_callback(obs_t, obs_tp1, action, rew, done, info)
+        points = self.data_callback(
+            obs_t, obs_tp1, action, rew, terminated, truncated, info
+        )
         for point, data_series in zip(points, self.data):
             data_series.append(point)
         self.t += 1
@@ -338,4 +378,9 @@ class PlayPlot:
                 range(xmin, xmax), list(self.data[i]), c="blue"
             )
             self.ax[i].set_xlim(xmin, xmax)
+
+        if plt is None:
+            raise DependencyNotInstalled(
+                "matplotlib is not installed, run `pip install gym[other]`"
+            )
         plt.pause(0.000001)
